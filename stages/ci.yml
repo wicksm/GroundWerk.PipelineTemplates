@@ -1,0 +1,78 @@
+# The ci stage, which opens every run of a pipeline that extends this template (CICD-3). One
+# container job on a Microsoft-hosted agent (CICD-15, CICD-18) scans the commits for secrets with
+# gitleaks, then runs the repo's build.cs inside SonarQube Cloud's analysis (CICD-2, GATE-1,
+# GATE-6). build.cs writes TRX test results and Cobertura coverage to artifacts/test-results.
+parameters:
+  # The image to build in, by digest, and the service connection that pulls it
+  - name: image
+    type: string
+  - name: registryConnection
+    type: string
+  # The SonarQube Cloud service connection, organization and project
+  - name: sonarConnection
+    type: string
+  - name: sonarOrganization
+    type: string
+  - name: sonarProjectKey
+    type: string
+  # More analysis properties, one per line
+  - name: sonarProperties
+    type: string
+    default: ''
+
+stages:
+  - stage: ci
+    jobs:
+      - job: build
+        displayName: Build, test and scan
+        pool:
+          vmImage: ubuntu-24.04
+        # The Docker socket lets tests start containers with Testcontainers beside this one
+        container:
+          image: ${{ parameters.image }}
+          endpoint: ${{ parameters.registryConnection }}
+          mapDockerSocket: true
+        steps:
+          # The whole history and its tags, since versions come from git tags
+          - checkout: self
+            fetchDepth: 0
+            fetchTags: true
+
+          # First, so a secret is never built or sent to SonarQube Cloud. A PR build scans each of
+          # the PR's commits, so a secret that a later commit removed still fails it, and a build
+          # of main scans the commit it builds.
+          - bash: |
+              if [ "$BUILD_REASON" = PullRequest ]; then
+                commits="origin/${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}..HEAD"
+              else
+                commits=-1
+              fi
+              gitleaks git --no-banner --redact --verbose --platform azuredevops --log-opts="$commits" .
+            displayName: Scan for secrets with gitleaks
+
+          # A PR build waits for the quality gate and fails if it fails. A build of main only
+          # reports.
+          - task: SonarCloudPrepare@4
+            displayName: Prepare SonarQube Cloud's analysis
+            inputs:
+              SonarCloud: ${{ parameters.sonarConnection }}
+              organization: ${{ parameters.sonarOrganization }}
+              scannerMode: dotnet
+              projectKey: ${{ parameters.sonarProjectKey }}
+              extraProperties: |
+                sonar.cs.cobertura.reportsPaths=$(Build.SourcesDirectory)/artifacts/test-results/*.cobertura.xml
+                sonar.qualitygate.wait=${{ lower(eq(variables['Build.Reason'], 'PullRequest')) }}
+                ${{ parameters.sonarProperties }}
+
+          - bash: dotnet run build.cs
+            displayName: Build and test with build.cs
+
+          - task: SonarCloudAnalyze@4
+            displayName: Run SonarQube Cloud's analysis
+
+          - task: PublishTestResults@2
+            displayName: Publish the test results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: VSTest
+              testResultsFiles: artifacts/test-results/*.trx

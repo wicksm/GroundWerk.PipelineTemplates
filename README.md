@@ -1,20 +1,11 @@
-# Introduction 
-TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+# GroundWerk.PipelineTemplates
 
-# Getting Started
-TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
-1.	Installation process
-2.	Software dependencies
-3.	Latest releases
-4.	API references
+GroundWerk.PipelineTemplates holds the Azure Pipelines templates that GroundWerk's pipelines extend, so every pipeline builds, scans and gates code the same way (CICD-1). A pipeline pins a release tag of this repo, such as v1.0.0, so a change here reaches a pipeline only through a PR that moves it to a new tag.
 
-# Build and Test
-TODO: Describe and show how to build your code and run the tests. 
+## Templates
 
-# Contribute
-TODO: Explain how other users and developers can contribute to make your code better. 
+- `stages/ci.yml`: the ci stage, which opens every run (CICD-3). One container job on a Microsoft-hosted agent, in the image the pipeline names, scans the commits for secrets with gitleaks, then runs the repo's build.cs inside SonarQube Cloud's analysis. In a PR build, a failed quality gate fails the job.
 
-If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
-- [ASP.NET Core](https://github.com/aspnet/Home)
-- [Visual Studio Code](https://github.com/Microsoft/vscode)
-- [Chakra Core](https://github.com/Microsoft/ChakraCore)
+## Releasing
+
+Change a template through a PR into main. Once it merges, tag the merge commit with the next version, such as v1.1.0, and push the tag: a new major version when a pipeline has to change to use it, such as a new parameter without a default. Never move or delete a tag, since pipelines pin them.
