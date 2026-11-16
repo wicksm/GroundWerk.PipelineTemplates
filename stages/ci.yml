@@ -1,7 +1,9 @@
 # The ci stage, which opens every run of a pipeline that extends this template (CICD-3). One
 # container job on a Microsoft-hosted agent (CICD-15, CICD-18) scans the commits for secrets with
 # gitleaks, then runs the repo's build.cs inside SonarQube Cloud's analysis (CICD-2, GATE-1,
-# GATE-6). build.cs writes TRX test results and Cobertura coverage to artifacts/test-results.
+# GATE-6). build.cs writes TRX test results and Cobertura coverage to artifacts/test-results, and
+# packages to artifacts/packages. A repo that ships packages names its feed, and then each PR
+# build pushes them as prereleases and each version tag's build as that version (CICD-13).
 parameters:
   # The image to build in, by digest, and the service connection that pulls it
   - name: image
@@ -17,6 +19,11 @@ parameters:
     type: string
   # More analysis properties, one per line
   - name: sonarProperties
+    type: string
+    default: ''
+  # The NuGet v3 URL of the Azure Artifacts feed the repo's packages go to, for a repo that ships
+  # packages
+  - name: packageFeed
     type: string
     default: ''
 
@@ -50,25 +57,38 @@ stages:
               gitleaks git --no-banner --redact --verbose --platform azuredevops --log-opts="$commits" .
             displayName: Scan for secrets with gitleaks
 
+          # Lets restore read the organization's Azure Artifacts feeds, and push to the repo's own,
+          # as the pipeline's build service
+          - task: NuGetAuthenticate@1
+            displayName: Sign in to Azure Artifacts
+
           # A PR build waits for the quality gate and fails if it fails. A build of main only
-          # reports.
-          - task: SonarCloudPrepare@4
-            displayName: Prepare SonarQube Cloud's analysis
-            inputs:
-              SonarCloud: ${{ parameters.sonarConnection }}
-              organization: ${{ parameters.sonarOrganization }}
-              scannerMode: dotnet
-              projectKey: ${{ parameters.sonarProjectKey }}
-              extraProperties: |
-                sonar.cs.cobertura.reportsPaths=$(Build.SourcesDirectory)/artifacts/test-results/*.cobertura.xml
-                sonar.qualitygate.wait=${{ lower(eq(variables['Build.Reason'], 'PullRequest')) }}
-                ${{ parameters.sonarProperties }}
+          # reports. A version tag's build skips the analysis, since main's build analyzed the same
+          # commit when it merged.
+          - ${{ if not(startsWith(variables['Build.SourceBranch'], 'refs/tags/')) }}:
+              - task: SonarCloudPrepare@4
+                displayName: Prepare SonarQube Cloud's analysis
+                inputs:
+                  SonarCloud: ${{ parameters.sonarConnection }}
+                  organization: ${{ parameters.sonarOrganization }}
+                  scannerMode: dotnet
+                  projectKey: ${{ parameters.sonarProjectKey }}
+                  extraProperties: |
+                    sonar.cs.cobertura.reportsPaths=$(Build.SourcesDirectory)/artifacts/test-results/*.cobertura.xml
+                    sonar.qualitygate.wait=${{ lower(eq(variables['Build.Reason'], 'PullRequest')) }}
+                    ${{ parameters.sonarProperties }}
 
           - bash: dotnet run build.cs
             displayName: Build and test with build.cs
+            # A PR build's packages are prereleases named for the PR and the run, such as
+            # 1.0.1-pr.42.1234.1, so two PRs never make the same version
+            ${{ if and(ne(parameters.packageFeed, ''), eq(variables['Build.Reason'], 'PullRequest')) }}:
+              env:
+                MinVerDefaultPreReleaseIdentifiers: pr.$(System.PullRequest.PullRequestId).$(Build.BuildId)
 
-          - task: SonarCloudAnalyze@4
-            displayName: Run SonarQube Cloud's analysis
+          - ${{ if not(startsWith(variables['Build.SourceBranch'], 'refs/tags/')) }}:
+              - task: SonarCloudAnalyze@4
+                displayName: Run SonarQube Cloud's analysis
 
           - task: PublishTestResults@2
             displayName: Publish the test results
@@ -76,3 +96,10 @@ stages:
             inputs:
               testResultsFormat: VSTest
               testResultsFiles: artifacts/test-results/*.trx
+
+          # A PR build pushes its prereleases, and a version tag's build pushes that version. A build
+          # of main pushes nothing, since its version is between releases. A version that's already
+          # in the feed is skipped, so a rerun passes.
+          - ${{ if and(ne(parameters.packageFeed, ''), or(eq(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))) }}:
+              - bash: dotnet nuget push "artifacts/packages/*.nupkg" --source "${{ parameters.packageFeed }}" --api-key AzureArtifacts --skip-duplicate
+                displayName: Push the packages to the feed

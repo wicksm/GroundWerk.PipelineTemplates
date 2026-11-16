@@ -4,7 +4,7 @@ GroundWerk.PipelineTemplates holds the Azure Pipelines templates that GroundWerk
 
 ## Templates
 
-- `stages/ci.yml`: the ci stage, which opens every run (CICD-3). One container job on a Microsoft-hosted agent, in the image the pipeline names, scans the commits for secrets with gitleaks, then runs the repo's build.cs inside SonarQube Cloud's analysis. In a PR build, a failed quality gate fails the job.
+- `stages/ci.yml`: the ci stage, which opens every run (CICD-3). One container job on a Microsoft-hosted agent, in the image the pipeline names, scans the commits for secrets with gitleaks, signs in to Azure Artifacts, then runs the repo's build.cs inside SonarQube Cloud's analysis. In a PR build, a failed quality gate fails the job. A repo that ships NuGet packages sets `packageFeed` to its feed's URL: each PR build then pushes its packages as prereleases named for the PR, and the build of a version tag such as v1.2.0 pushes that version, without a second analysis (CICD-13).
 
 ## Releasing
 
