@@ -3,7 +3,9 @@
 # gitleaks, then runs the repo's build.cs inside SonarQube Cloud's analysis (CICD-2, GATE-1,
 # GATE-6). build.cs writes TRX test results and Cobertura coverage to artifacts/test-results, and
 # packages to artifacts/packages. A repo that ships packages names its feed, and then each PR
-# build pushes them as prereleases and each version tag's build as that version (CICD-13).
+# build pushes them as prereleases and each version tag's build as that version (CICD-13). Each
+# build then checks the repo's packages against the minimum versions in variable group
+# minimum-versions, and fails from a minimum's deadline on if a package is still below it (CICD-17).
 parameters:
   # The image to build in, by digest, and the service connection that pulls it
   - name: image
@@ -29,6 +31,9 @@ parameters:
 
 stages:
   - stage: ci
+    # The minimum versions that builds must reach, which GroundWerk's azdo Terraform sets
+    variables:
+      - group: minimum-versions
     jobs:
       - job: build
         displayName: Build, test and scan
@@ -85,6 +90,63 @@ stages:
             ${{ if and(ne(parameters.packageFeed, ''), eq(variables['Build.Reason'], 'PullRequest')) }}:
               env:
                 MinVerDefaultPreReleaseIdentifiers: pr.$(System.PullRequest.PullRequestId).$(Build.BuildId)
+
+          # Warns while a package the repo uses is below its minimum version, and fails the build
+          # from the minimum's deadline on, in UTC (CICD-17). The minimums come from the variable
+          # group, so a new one reaches every build on this template at once, with no new tag.
+          - pwsh: |
+              $minimums = @($env:MINIMUM_VERSIONS | ConvertFrom-Json)
+              if ($minimums.Count -eq 0) {
+                Write-Host 'No package has a minimum version yet'
+                exit 0
+              }
+
+              # Every package each project uses, directly or through another package, as build.cs
+              # restored it
+              $listing = dotnet list package --include-transitive --no-restore --format json | Out-String
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host $listing
+                Write-Host '##vso[task.logissue type=error]dotnet list package failed'
+                exit 1
+              }
+              $used = foreach ($project in ($listing | ConvertFrom-Json).projects) {
+                foreach ($framework in $project.frameworks) {
+                  foreach ($package in @($framework.topLevelPackages) + @($framework.transitivePackages)) {
+                    if ($package) {
+                      [pscustomobject]@{
+                        Project = [IO.Path]::GetFileNameWithoutExtension($project.path)
+                        Id      = $package.id
+                        Version = $package.resolvedVersion
+                      }
+                    }
+                  }
+                }
+              }
+
+              $today = [datetime]::UtcNow.Date
+              $failed = $false
+              foreach ($minimum in $minimums) {
+                $deadline = [datetime]::ParseExact($minimum.deadline, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture)
+                $below = $used | Where-Object { $_.Id -eq $minimum.package -and [semver]$_.Version -lt [semver]$minimum.minimum }
+                foreach ($version in $below | Group-Object Version) {
+                  $projects = ($version.Group.Project | Sort-Object -Unique) -join ', '
+                  $message = "$($minimum.package) $($version.Name), used by $projects, is below its minimum version $($minimum.minimum), which builds need from $($minimum.deadline)"
+                  if ($today -ge $deadline) {
+                    Write-Host "##vso[task.logissue type=error]$message"
+                    $failed = $true
+                  }
+                  else {
+                    Write-Host "##vso[task.logissue type=warning]$message"
+                  }
+                }
+              }
+              if ($failed) {
+                exit 1
+              }
+              Write-Host 'No package is below a minimum version in force'
+            displayName: Check packages against their minimum versions
+            env:
+              MINIMUM_VERSIONS: $(minimumVersions)
 
           - ${{ if not(startsWith(variables['Build.SourceBranch'], 'refs/tags/')) }}:
               - task: SonarCloudAnalyze@4
