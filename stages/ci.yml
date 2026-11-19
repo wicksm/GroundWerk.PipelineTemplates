@@ -6,6 +6,7 @@
 # build pushes them as prereleases and each version tag's build as that version (CICD-13). Each
 # build then checks the repo's packages against the minimum versions in variable group
 # minimum-versions, and fails from a minimum's deadline on if a package is still below it (CICD-17).
+# A version tag's build releases nothing unless the tag is on main (CICD-13).
 parameters:
   # The image to build in, by digest, and the service connection that pulls it
   - name: image
@@ -61,6 +62,23 @@ stages:
               fi
               gitleaks git --no-banner --redact --verbose --platform azuredevops --log-opts="$commits" .
             displayName: Scan for secrets with gitleaks
+
+          # A version tag's build checks that the tag is on main before it signs in to Azure
+          # Artifacts or runs the repo's code, so a tag on any other commit, such as a branch's last
+          # commit after its PR's squash merge, releases nothing (CICD-13)
+          - ${{ if and(ne(parameters.packageFeed, ''), startsWith(variables['Build.SourceBranch'], 'refs/tags/v')) }}:
+              - bash: |
+                  if ! git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null; then
+                    echo "##vso[task.logissue type=error]The checkout has no origin/main to check $BUILD_SOURCEBRANCHNAME against, so nothing was released"
+                    exit 1
+                  fi
+                  if git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+                    echo "$BUILD_SOURCEBRANCHNAME is on main, so this build may release it"
+                    exit 0
+                  fi
+                  echo "##vso[task.logissue type=error]$BUILD_SOURCEBRANCHNAME is on commit $(git rev-parse --short HEAD), which isn't on main, so nothing was released. Tag the commit that its PR's merge made on main instead."
+                  exit 1
+                displayName: Check the tag is on main
 
           # Lets restore read the organization's Azure Artifacts feeds, and push to the repo's own,
           # as the pipeline's build service
