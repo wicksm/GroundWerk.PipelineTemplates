@@ -1,6 +1,6 @@
 # GroundWerk.PipelineTemplates
 
-GroundWerk.PipelineTemplates holds the Azure Pipelines templates that GroundWerk's pipelines extend, so every pipeline builds, scans and gates code the same way (CICD-1). A pipeline pins a release tag of this repo, such as v1.0.0, so a change here reaches a pipeline only through a PR that moves it to a new tag, which Renovate opens in each repo once the tag is pushed (CICD-17).
+GroundWerk.PipelineTemplates holds the Azure Pipelines templates that the project's pipelines extend, so every pipeline builds, scans and gates code the same way (CICD-1). A pipeline pins a release tag of this repo, such as v1.0.0, so a change here reaches a pipeline only through a PR that moves it to a new tag, which Renovate opens in each repo once the tag is pushed (CICD-17).
 
 ## Templates
 
