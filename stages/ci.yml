@@ -3,8 +3,9 @@
 # gitleaks, then runs the repo's build.cs inside SonarQube Cloud's analysis (CICD-2, GATE-1,
 # GATE-6). build.cs writes TRX test results and Cobertura coverage to artifacts/test-results, and
 # packages to artifacts/packages. A repo that ships packages names its feed, and then each PR
-# build pushes them as prereleases and each version tag's build as that version (CICD-13). Each
-# build then checks the repo's packages against the minimum versions in variable group
+# build pushes them as prereleases and each version tag's build as that version (CICD-13), from
+# a second job that runs none of the repo's code and is the only one that signs in to Azure
+# Artifacts. Each build checks the repo's packages against the minimum versions in variable group
 # minimum-versions, and fails from a minimum's deadline on if a package is still below it (CICD-17).
 # A version tag's build releases nothing unless the tag is on main (CICD-13).
 parameters:
@@ -79,11 +80,6 @@ stages:
                   echo "##vso[task.logissue type=error]$BUILD_SOURCEBRANCHNAME is on commit $(git rev-parse --short HEAD), which isn't on main, so nothing was released. Tag the commit that its PR's merge made on main instead."
                   exit 1
                 displayName: Check the tag is on main
-
-          # Lets restore read the organization's Azure Artifacts feeds, and push to the repo's own,
-          # as the pipeline's build service
-          - task: NuGetAuthenticate@1
-            displayName: Sign in to Azure Artifacts
 
           # A PR build waits for the quality gate and fails if it fails. A build of main only
           # reports. A version tag's build skips the analysis, since main's build analyzed the same
@@ -177,9 +173,37 @@ stages:
               testResultsFormat: VSTest
               testResultsFiles: artifacts/test-results/*.trx
 
-          # A PR build pushes its prereleases, and a version tag's build pushes that version. A build
-          # of main pushes nothing, since its version is between releases. A version that's already
-          # in the feed is skipped, so a rerun passes.
+          # A PR build hands its prereleases to the push job, and a version tag's build that version.
+          # A build of main pushes nothing, since its version is between releases.
           - ${{ if and(ne(parameters.packageFeed, ''), or(eq(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))) }}:
-              - bash: dotnet nuget push "artifacts/packages/*.nupkg" --source "${{ parameters.packageFeed }}" --api-key AzureArtifacts --skip-duplicate
+              - publish: artifacts/packages
+                artifact: packages
+                displayName: Hand the packages to the push job
+
+      # Pushes the build job's packages to the feed. It's the only job that signs in to Azure
+      # Artifacts, and it runs none of the repo's code, so a PR's build.cs and tests never run with
+      # the feed's sign-in in their environment (CICD-13). A version that's already in the feed is
+      # skipped, so a rerun passes.
+      - ${{ if and(ne(parameters.packageFeed, ''), or(eq(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))) }}:
+          - job: push
+            displayName: Push the packages
+            dependsOn: build
+            pool:
+              vmImage: ubuntu-24.04
+            # The same image as the build job, so the push runs with the same .NET SDK
+            container:
+              image: ${{ parameters.image }}
+              endpoint: ${{ parameters.registryConnection }}
+            steps:
+              - checkout: none
+
+              - download: current
+                artifact: packages
+                displayName: Take the build job's packages
+
+              # Lets dotnet nuget push sign in to the feed as the pipeline's build service
+              - task: NuGetAuthenticate@1
+                displayName: Sign in to Azure Artifacts
+
+              - bash: dotnet nuget push "$(Pipeline.Workspace)/packages/*.nupkg" --source "${{ parameters.packageFeed }}" --api-key AzureArtifacts --skip-duplicate
                 displayName: Push the packages to the feed
