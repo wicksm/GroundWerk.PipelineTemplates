@@ -9,3 +9,11 @@ GroundWerk.PipelineTemplates holds the Azure Pipelines templates that the projec
 ## Releasing
 
 Change a template through a PR into main. Once it merges, tag the merge commit with the next version, such as v1.1.0, and push the tag: a new major version when a pipeline has to change to use it, such as a new parameter without a default. Never move or delete a tag, since pipelines pin them.
+
+## Part of GroundWerk
+
+GroundWerk.PipelineTemplates is one of GroundWerk's three repos, with GroundWerk and GroundWerk.InnerSource, and GroundWerk's README says what the kit is and how to start. The repos live in Azure DevOps, and this copy on GitHub is a read-only mirror of main and the tags (docs/adr/0013 in the GroundWerk repo), so a pull request opened on GitHub isn't merged.
+
+## License
+
+MIT, as LICENSE says.
